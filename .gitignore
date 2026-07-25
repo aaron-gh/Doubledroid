@@ -1,0 +1,23 @@
+# Gradle / Android build output
+.gradle/
+build/
+app/build/
+local.properties
+.cxx/
+app/.cxx/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# The DoubleTalk PC firmware ROM is proprietary RC Systems software and must
+# never be committed (same policy as doubletalk-pc upstream).
+*.bin
+rom/
+
+# Signing (back up the keystore + keystore.properties somewhere safe —
+# losing them means future releases can't update existing installs)
+*.keystore
+*.jks
+keystore.properties

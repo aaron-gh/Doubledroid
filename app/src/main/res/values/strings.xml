@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">DoubleDroid</string>
+    <string name="engine_name">DoubleTalk PC (emulated)</string>
+    <string name="sample_text">Hello! I am the Double Talk P C, an antique speech synthesizer from 1993.</string>
+
+    <!-- Settings screen -->
+    <string name="rom_section">Firmware ROM</string>
+    <string name="rom_missing">No firmware ROM imported. DoubleDroid runs the original DoubleTalk PC firmware, which is proprietary RC Systems software and is not included — import your own 512 KB dump of doubletalkpc.bin (CRC32 66685631).</string>
+    <string name="rom_present">Firmware ROM imported (%1$s). The engine is ready.</string>
+    <string name="rom_hash_ok">ROM verified: CRC32 and SHA-1 match the known DoubleTalk PC firmware.</string>
+    <string name="rom_hash_mismatch">Warning: this ROM\'s hashes do not match the known DoubleTalk PC firmware (expected CRC32 66685631). It may still work if it is a different revision.</string>
+    <string name="rom_wrong_size">The selected file is %1$d bytes; the DoubleTalk PC firmware ROM is exactly 524,288 bytes (512 KB). Import cancelled.</string>
+    <string name="rom_boot_failed">The emulator failed to boot with this ROM. Import cancelled.</string>
+    <string name="rom_import_error">Could not read the selected file: %1$s</string>
+    <string name="import_rom">Import ROM…</string>
+
+    <string name="voice_section">Voice</string>
+    <string name="default_voice">Default voice</string>
+    <string name="output_section">Output</string>
+    <string name="filter_label">Output filter</string>
+    <string name="filter_classic">Classic (3 kHz, authentic)</string>
+    <string name="filter_wide">Wide (4.8 kHz, brighter)</string>
+    <string name="rate_boost_label">Rate boost (faster than the card\'s maximum, pitch preserved)</string>
+    <string name="volume_label">Volume (card nV)</string>
+
+    <string name="quality_section">Voice quality</string>
+    <string name="quality_hint">Auto follows the selected voice\'s own firmware preset.</string>
+    <string name="tone_label">Tone</string>
+    <string name="tone_auto">Auto (voice preset)</string>
+    <string name="tone_bass">Bass</string>
+    <string name="tone_normal">Normal</string>
+    <string name="tone_treble">Treble</string>
+    <string name="articulation_label">Articulation</string>
+    <string name="expression_label">Expression</string>
+    <string name="formant_label">Formant frequency</string>
+    <string name="reverb_label">Reverb</string>
+    <string name="auto_value">Auto</string>
+
+    <string name="test_section">Test</string>
+    <string name="test_hint">Type something to speak</string>
+    <string name="test_default_text">Hello! This is Double Talk running on Android.</string>
+    <string name="speak">Speak</string>
+    <string name="stop">Stop</string>
+    <string name="test_no_rom">Import a firmware ROM first.</string>
+</resources>
