@@ -22,6 +22,7 @@ object DoubleTalkEngine {
     const val PREF_VOICE = "voice"            // card nO 0-7
     const val PREF_FILTER = "filter"          // low-pass corner Hz: 3000 or 4000
     const val PREF_RATE_BOOST = "rate_boost"  // bool
+    const val PREF_PAUSE_CAP_MS = "pause_cap_ms" // max sentence/punctuation pause, ms; 0 = authentic (no cap)
     const val PREF_VOLUME = "volume"          // card nV 0-9, -1 = auto (card default)
     const val PREF_TONE = "tone"              // card nX 0-2, -1 = voice preset
     const val PREF_ARTICULATION = "articulation" // nA 0-9, -1 = voice preset
@@ -69,6 +70,14 @@ object DoubleTalkEngine {
     private val lock = Any()
     private var handle = 0L
 
+    // Card voice (nO) last sent to the firmware, or -1 if none yet (forces
+    // the next utterance to send it). Selecting a voice reloads its firmware
+    // preset - real work the emulator has to run through - so re-sending it
+    // on every utterance when it hasn't actually changed was pure wasted
+    // latency before speech could start. Tracked here (not per-utterance)
+    // since it reflects the one shared emulator instance's real state.
+    private var lastVoiceSent = -1
+
     @Volatile
     var sampleRate = 10504
         private set
@@ -100,6 +109,7 @@ object DoubleTalkEngine {
             val outRate = preferredOutputRate(context, cardRate)
             DoubleTalkNative.setOutputRate(handle, outRate)
             sampleRate = outRate
+            lastVoiceSent = -1 // freshly booted firmware is at its own default (voice 0)
         }
         applyPrefs(context)
         return true
@@ -128,6 +138,7 @@ object DoubleTalkEngine {
             if (handle != 0L) {
                 DoubleTalkNative.destroy(handle)
                 handle = 0L
+                lastVoiceSent = -1
             }
         }
     }
@@ -137,11 +148,13 @@ object DoubleTalkEngine {
         val p = prefs(context)
         val filter = p.getInt(PREF_FILTER, 3000)
         val boost = p.getBoolean(PREF_RATE_BOOST, false)
+        val pauseCapMs = p.getInt(PREF_PAUSE_CAP_MS, 0)
         synchronized(lock) {
             if (handle == 0L) return
             DoubleTalkNative.setLowpassHz(handle, filter)
             DoubleTalkNative.setRateBoost(
                 handle, if (boost) DoubleTalkNative.rateBoostMax() else 0)
+            DoubleTalkNative.setPauseCapMs(handle, pauseCapMs)
         }
     }
 
@@ -196,6 +209,11 @@ object DoubleTalkEngine {
      *
      * [rate]/[pitch] are Android TTS units (100 = normal); the voice-quality
      * values are card-native with -1 meaning "leave at voice preset".
+     *
+     * [skipVoice] omits the nO command entirely: reloading a voice preset is
+     * real firmware work (and real emulated time), so a caller that already
+     * knows the card is on this voice from a prior utterance can skip it -
+     * see lastVoiceSent.
      */
     fun buildPrefix(
         cardVoice: Int,
@@ -207,11 +225,12 @@ object DoubleTalkEngine {
         expression: Int = -1,
         formant: Int = -1,
         reverb: Int = -1,
+        skipVoice: Boolean = false,
     ): String {
         val v = cardVoice.coerceIn(0, 7)
         val preset = VOICE_PRESETS[v]
         val sb = StringBuilder()
-        sb.append('\u0001').append(v).append('O')
+        if (!skipVoice) sb.append('\u0001').append(v).append('O')
         val nS = mapRate(rate)
         if (nS != 5) sb.append('\u0001').append(nS).append('S')
         val nP = mapPitch(pitch, preset[0])
@@ -229,9 +248,16 @@ object DoubleTalkEngine {
         return sb.toString()
     }
 
-    /** Prefix built from the saved settings (voice overridable per-request). */
+    /** Prefix built from the saved settings (voice overridable per-request).
+     * Skips the nO command when [cardVoice] matches what the last utterance
+     * already loaded onto the card - see lastVoiceSent. */
     fun buildPrefixFromPrefs(context: Context, cardVoice: Int, rate: Int, pitch: Int): String {
         val p = prefs(context)
+        val skipVoice = synchronized(lock) {
+            val skip = cardVoice == lastVoiceSent
+            lastVoiceSent = cardVoice
+            skip
+        }
         return buildPrefix(
             cardVoice = cardVoice,
             rate = rate,
@@ -242,6 +268,7 @@ object DoubleTalkEngine {
             expression = p.getInt(PREF_EXPRESSION, -1),
             formant = p.getInt(PREF_FORMANT, -1),
             reverb = p.getInt(PREF_REVERB, -1),
+            skipVoice = skipVoice,
         )
     }
 

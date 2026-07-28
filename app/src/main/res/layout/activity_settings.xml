@@ -74,6 +74,18 @@
             android:text="@string/rate_boost_label" />
 
         <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:labelFor="@+id/pause_spinner"
+            android:text="@string/pause_label" />
+
+        <Spinner
+            android:id="@+id/pause_spinner"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
+        <TextView
             android:id="@+id/volume_label"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"

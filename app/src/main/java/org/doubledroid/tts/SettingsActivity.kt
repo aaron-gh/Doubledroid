@@ -86,6 +86,24 @@ class SettingsActivity : Activity() {
             DoubleTalkEngine.applyPrefs(this)
         }
 
+        // Pause after sentences/punctuation: the firmware has no "faster
+        // than default" word-gap command (nT already defaults to its own
+        // fastest setting), so this trims long silence runs out of the
+        // generated audio instead - see dtalk_set_pause_cap_ms.
+        val pauseSpinner = findViewById<Spinner>(R.id.pause_spinner)
+        val pauseCapValues = intArrayOf(0, 300, 150, 60)
+        pauseSpinner.adapter = ArrayAdapter(this,
+            android.R.layout.simple_spinner_dropdown_item,
+            arrayOf(getString(R.string.pause_default), getString(R.string.pause_short),
+                getString(R.string.pause_shorter), getString(R.string.pause_shortest)))
+        pauseSpinner.setSelection(
+            pauseCapValues.indexOf(prefs.getInt(DoubleTalkEngine.PREF_PAUSE_CAP_MS, 0))
+                .coerceAtLeast(0))
+        pauseSpinner.onItemSelectedListener = onSelected { pos ->
+            prefs.edit().putInt(DoubleTalkEngine.PREF_PAUSE_CAP_MS, pauseCapValues[pos]).apply()
+            DoubleTalkEngine.applyPrefs(this)
+        }
+
         // Volume + voice-quality sliders: SeekBar position 0 = Auto (follow
         // the voice preset / card default), 1..10 = card value 0..9.
         bindAutoSlider(R.id.volume_seek, R.id.volume_label,

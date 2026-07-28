@@ -60,6 +60,12 @@ Java_org_doubledroid_tts_DoubleTalkNative_setLowpassHz(JNIEnv *, jobject, jlong 
 }
 
 JNIEXPORT void JNICALL
+Java_org_doubledroid_tts_DoubleTalkNative_setPauseCapMs(JNIEnv *, jobject, jlong h, jint ms)
+{
+	dtalk_set_pause_cap_ms((dtalk *)(intptr_t)h, (uint32_t)ms);
+}
+
+JNIEXPORT void JNICALL
 Java_org_doubledroid_tts_DoubleTalkNative_setOutputRate(JNIEnv *, jobject, jlong h, jint hz)
 {
 	dtalk_set_output_rate((dtalk *)(intptr_t)h, (uint32_t)hz);

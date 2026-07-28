@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <deque>
 #include <vector>
 
@@ -57,6 +58,31 @@ constexpr double HEADROOM_GAIN = 0.5;   // MAME's DAC output route
 // noise band.
 constexpr double LPF_HZ_MIN = 500.0;
 constexpr double LPF_HZ_MAX = 5000.0;
+
+// ---- pause shortening (dtalk_set_pause_cap_ms) -----------------------------
+// The firmware itself has no command that shortens the silence after
+// sentence-ending punctuation (the manual's nT "word gap" already defaults to
+// 0, its fastest setting - there's nothing faster to ask for). What users
+// actually perceive as a long pause is the firmware's own end-of-sentence/
+// comma intonation drop, which just holds the DAC at its idle level
+// (m_dac_level's power-on value, doubletalk_board.h) for a while. So instead
+// of a firmware command, this trims that silence directly in the generated
+// PCM: any run of raw samples within PAUSE_SILENCE_TOL of the idle byte
+// (0x80, matching doubletalk_board's m_dac_level reset value) longer than the
+// configured cap is truncated to the cap. Word-to-word gaps (governed by nT,
+// already at its authentic minimum) are far shorter than any sane cap here,
+// so only the long punctuation/sentence pauses are ever affected.
+constexpr u8 PAUSE_IDLE_BYTE = 0x80;
+constexpr int PAUSE_SILENCE_TOL = 1;
+
+// An utterance's lead-in silence (the firmware still parsing the command
+// prefix/text before its very first sound) is always capped to this, no
+// matter what pause_cap_samples the host has configured for mid-utterance
+// pauses - a slow start isn't something anyone wants to opt out of the way
+// they might want the authentic sentence-pause length, and this is cheap:
+// see the trimming loop in pull() for why it's a net win, not just a
+// tradeoff.
+constexpr u32 LEADIN_CAP_SAMPLES = SAMPLE_RATE * 10 / 1000; // 10ms
 
 // Firmware text-buffer read/write pointers in CPU RAM (same addresses the
 // MAME capture.lua watched): equal <=> input buffer fully consumed.
@@ -419,6 +445,9 @@ struct dtalk
 	u64 samples_base = 0;              // board-grid samples discarded at boot
 	u64 samples_dropped = 0;           // grid samples pulled/carried but never delivered (dtalk_stop)
 	s64 idle_stable = 0;               // consecutive idle cycles observed
+	u32 pause_cap_samples = 0;         // max silence run, in samples; 0 = disabled (authentic)
+	u32 silence_run = 0;               // consecutive near-idle samples seen since the last non-silent one
+	bool heard_speech = false;         // true once this utterance has produced a non-silent sample
 	int rate_boost = 0;                // current boost level (0 = authentic)
 	u16 rate_orig[RATE_REGION_HI - RATE_REGION_LO + 1]; // pristine period words
 	bool rate_saved = false;
@@ -513,7 +542,37 @@ struct dtalk
 
 	void pull()
 	{
-		board.pull_samples(carry, SAMPLE_RATE);
+		// Always run silence through the trimmer, even with pause_cap_samples
+		// == 0 (authentic mid-utterance pauses): the lead-in cap below still
+		// applies before the first sound regardless, so utterance start-up
+		// never gets to be slow - see LEADIN_CAP_SAMPLES. Emulating a bit
+		// further to make up dropped samples costs far less wall-clock time
+		// (the CPU emulation runs well faster than real time) than the
+		// silence would have cost being played out through the speaker at
+		// 1x, so trimming it nets a real reduction in time-to-audible-sound
+		// rather than just trading one delay for another.
+		std::vector<u8> raw;
+		board.pull_samples(raw, SAMPLE_RATE);
+		for (u8 b : raw)
+		{
+			bool silent = std::abs(int(b) - int(PAUSE_IDLE_BYTE)) <= PAUSE_SILENCE_TOL;
+			if (silent)
+			{
+				u32 cap = heard_speech ? pause_cap_samples : LEADIN_CAP_SAMPLES;
+				if (cap != 0 && silence_run >= cap)
+				{
+					samples_dropped++;
+					continue;
+				}
+				silence_run++;
+			}
+			else
+			{
+				silence_run = 0;
+				heard_speech = true;
+			}
+			carry.push_back(b);
+		}
 		auto &ev = board.index_events();
 		while (!ev.empty())
 		{
@@ -576,6 +635,8 @@ void dtalk_reset(dtalk *dt)
 	dt->carry_off = 0;
 	dt->samples_dropped = 0;
 	dt->idle_stable = 0;
+	dt->silence_run = 0;
+	dt->heard_speech = false;
 	dt->out16.reset();
 	dt->resamp.reset();
 	dt->board.reset();
@@ -638,6 +699,8 @@ void dtalk_stop(dtalk *dt)
 	dt->out16.reset();
 	dt->resamp.reset();
 	dt->idle_stable = 0;
+	dt->silence_run = 0;
+	dt->heard_speech = false;
 }
 
 int dtalk_active(dtalk *dt)
@@ -733,6 +796,14 @@ void dtalk_set_lowpass_hz(dtalk *dt, uint32_t hz)
 	// to LPF_HZ_MIN..LPF_HZ_MAX. Only the biquad coefficients change; the
 	// filter's sample history is preserved so a mid-stream change is seamless.
 	dt->out16.set_lowpass(hz == 0 ? LPF_HZ : double(hz));
+}
+
+void dtalk_set_pause_cap_ms(dtalk *dt, uint32_t ms)
+{
+	// 0 disables trimming (the authentic firmware pause). Otherwise any
+	// silence run longer than ms is cut down to ms - see pull()'s trimming
+	// and the pause-shortening note above LPF_HZ_MIN/MAX.
+	dt->pause_cap_samples = ms == 0 ? 0 : u32(u64(ms) * SAMPLE_RATE / 1000);
 }
 
 void dtalk_set_output_rate(dtalk *dt, uint32_t hz)
