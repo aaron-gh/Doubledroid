@@ -9,6 +9,7 @@ package org.doubledroid.tts
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.media.AudioManager
 import java.io.File
 
 object DoubleTalkEngine {
@@ -19,7 +20,7 @@ object DoubleTalkEngine {
 
     const val PREFS_NAME = "doubledroid"
     const val PREF_VOICE = "voice"            // card nO 0-7
-    const val PREF_FILTER = "filter"          // low-pass corner Hz: 3000 or 4800
+    const val PREF_FILTER = "filter"          // low-pass corner Hz: 3000 or 4000
     const val PREF_RATE_BOOST = "rate_boost"  // bool
     const val PREF_PAUSE_CAP_MS = "pause_cap_ms" // max sentence/punctuation pause, ms; 0 = authentic (no cap)
     const val PREF_VOLUME = "volume"          // card nV 0-9, -1 = auto (card default)
@@ -104,11 +105,29 @@ object DoubleTalkEngine {
             }
             handle = DoubleTalkNative.create(rom)
             if (handle == 0L) return false
-            sampleRate = DoubleTalkNative.sampleRate(handle)
+            val cardRate = DoubleTalkNative.sampleRate(handle)
+            val outRate = preferredOutputRate(context, cardRate)
+            DoubleTalkNative.setOutputRate(handle, outRate)
+            sampleRate = outRate
             lastVoiceSent = -1 // freshly booted firmware is at its own default (voice 0)
         }
         applyPrefs(context)
         return true
+    }
+
+    /** The card's raw rate (10504Hz) upsamples badly through Android's own
+     * audio pipeline - not a clean ratio to typical device rates, and this
+     * was observed to leave audible imaging artifacts independent of the
+     * dtalk_set_lowpass_hz corner. So instead of handing AudioTrack/the TTS
+     * callback the raw rate and leaving that resample to the OS, synthChunk
+     * is upsampled here (dtalk_set_output_rate) to the device's own native
+     * mixer rate, with a filter tuned to this signal. Falls back to the raw
+     * card rate (no resampling) if the platform doesn't report a usable
+     * native rate. */
+    private fun preferredOutputRate(context: Context, cardRate: Int): Int {
+        val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        val native = am?.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)?.toIntOrNull()
+        return if (native != null && native > cardRate) native else cardRate
     }
 
     fun isOpen(): Boolean = synchronized(lock) { handle != 0L }
@@ -253,10 +272,22 @@ object DoubleTalkEngine {
         )
     }
 
+    /** Unicode punctuation that has an unambiguous ASCII equivalent (iOS/macOS
+     * autocorrect curly quotes, en/em dashes, ellipsis, etc.). Mapped before
+     * the ASCII-only strip below so e.g. a curly apostrophe still reads as
+     * "don't" rather than becoming a word-breaking space ("don t"). */
+    private val UNICODE_PUNCTUATION = mapOf(
+        '‘' to '\'', '’' to '\'', '‚' to '\'', '′' to '\'',
+        '“' to '"', '”' to '"', '„' to '"', '″' to '"',
+        '–' to '-', '—' to '-',
+        '…' to '.',
+    )
+
     /** Printable ASCII only: the firmware treats control bytes as commands
      * (and 0x01 must never occur in user text). */
     fun sanitizeText(text: String): String =
-        text.replace(Regex("[^\\x20-\\x7e]"), " ")
+        text.map { UNICODE_PUNCTUATION[it] ?: it }.joinToString("")
+            .replace(Regex("[^\\x20-\\x7e]"), " ")
 
     /** Full utterance: settings prefix + sanitized text + CR (starts speech). */
     fun utteranceBytes(context: Context, cardVoice: Int, rate: Int, pitch: Int, text: String): ByteArray {

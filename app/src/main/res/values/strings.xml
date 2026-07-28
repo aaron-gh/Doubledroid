@@ -20,7 +20,7 @@
     <string name="output_section">Output</string>
     <string name="filter_label">Output filter</string>
     <string name="filter_classic">Classic (3 kHz, authentic)</string>
-    <string name="filter_wide">Wide (4.8 kHz, brighter)</string>
+    <string name="filter_wide">Wide (4 kHz, brighter)</string>
     <string name="rate_boost_label">Rate boost (faster than the card\'s maximum, pitch preserved)</string>
     <string name="volume_label">Volume (card nV)</string>
     <string name="pause_label">Pause after sentences/punctuation</string>

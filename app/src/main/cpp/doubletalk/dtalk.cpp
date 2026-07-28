@@ -7,6 +7,7 @@
 
 #include "doubletalk_board.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <deque>
@@ -48,7 +49,13 @@ constexpr double LPF_HZ = 3000.0;       // default reconstruction low-pass corne
 constexpr double HEADROOM_GAIN = 0.5;   // MAME's DAC output route
                                         // (add_route(ALL_OUTPUTS,"mono",0.5))
 // User-selectable low-pass corner bounds (dtalk_set_lowpass_hz). 3000 is the
-// authentic datasheet default; the NVDA driver's "Wide" preset uses 4800.
+// authentic datasheet default. The NVDA driver's "Wide" preset uses 4800, but
+// that sits close enough to the ~5252Hz Nyquist limit that the 2-pole filter
+// barely attenuates the 10.5kHz DAC's staircase noise below it (measured:
+// -0.06dB at 4000Hz, -5.7dB at 4900Hz), so the artifacting it was meant to
+// tame stays audible. This app's own "Wide" preset uses 4000 instead - still
+// clearly brighter than Classic but with ~20-30dB more attenuation across the
+// noise band.
 constexpr double LPF_HZ_MIN = 500.0;
 constexpr double LPF_HZ_MAX = 5000.0;
 
@@ -132,6 +139,31 @@ struct output_stage
 	double lp_x1 = 0, lp_x2 = 0, lp_y1 = 0, lp_y2 = 0;
 	bool prime = true; // next input primes the DC-block so resume has no step
 
+	// Trailing-tail gate: a word-final stop-consonant release (e.g. the "d"
+	// in "good.") is a single sharp excitation whose filter ringing lingers
+	// for ~100-150ms after the raw excitation itself has already gone quiet
+	// (measured: still ~1-3% of full scale there, well below speech level
+	// but not literally zero). That's inaudible on a neutral desktop output,
+	// but audible as a trailing buzz through a phone speaker path with
+	// loudness/dynamics enhancement (e.g. Samsung's), which brings quiet
+	// tails back up. This is self-contained and independent of the board's
+	// own idle detection (dtalk_synth's IDLE_SETTLE_CYCLES, which exists to
+	// tolerate normal inter-word pauses and shouldn't be shortened): checked
+	// directly against each raw pre-filter sample (not a smoothed envelope,
+	// which would lag behind the firmware going quiet and never catch up
+	// before the utterance ends) so it starts counting the instant that
+	// input itself drops quiet, then once it's stayed quiet for
+	// GATE_HOLD_SAMPLES, fades whatever the filters are still ringing with
+	// down to silence over a further ~15ms. A sustained vowel/continuant
+	// never gets this quiet, so it can't false-trigger mid-word; a genuine
+	// inter-word pause is already supposed to be near-silent, so gating it
+	// early is harmless either way.
+	int gate_quiet = 0;
+	double gate_gain = 1.0;
+	static constexpr double GATE_THRESH = 0.02;   // relative to full-scale [-1,1] input
+	static constexpr int GATE_HOLD_SAMPLES = 300; // ~28ms @ SAMPLE_RATE before the fade begins
+	static constexpr double GATE_DECAY = 0.05;    // per-sample multiplicative decay once triggered
+
 	output_stage()
 	{
 		r = 1.0 - (2.0 * DT_PI * DC_BLOCK_HZ / double(SAMPLE_RATE));
@@ -162,6 +194,8 @@ struct output_stage
 		hp_y1 = 0.0;
 		lp_x1 = lp_x2 = lp_y1 = lp_y2 = 0.0;
 		prime = true;
+		gate_quiet = 0;
+		gate_gain = 1.0;
 	}
 
 	int16_t process(double x)
@@ -182,11 +216,216 @@ struct output_stage
 		double lp = b0 * hp + b1 * lp_x1 + b2 * lp_x2 - a1 * lp_y1 - a2 * lp_y2;
 		lp_x2 = lp_x1; lp_x1 = hp;
 		lp_y2 = lp_y1; lp_y1 = lp;
+		// trailing-tail gate (see the field comment): checked directly against
+		// the raw, pre-filter excitation sample so it reflects what the
+		// firmware is actually feeding in right now, not the filters' own
+		// ringing (a smoothed envelope here would lag behind the firmware
+		// actually going quiet and never catch up before the utterance ends).
+		if (std::fabs(x) < GATE_THRESH)
+		{
+			if (gate_quiet < GATE_HOLD_SAMPLES) gate_quiet++;
+		}
+		else
+		{
+			gate_quiet = 0;
+			gate_gain = 1.0;
+		}
+		if (gate_quiet >= GATE_HOLD_SAMPLES)
+		{
+			gate_gain *= (1.0 - GATE_DECAY);
+			if (gate_gain < 0.0) gate_gain = 0.0;
+		}
 		// headroom gain, clamp to int16
-		double y = lp * HEADROOM_GAIN * 32768.0;
+		double y = lp * gate_gain * HEADROOM_GAIN * 32768.0;
 		if (y > 32767.0) y = 32767.0;
 		else if (y < -32768.0) y = -32768.0;
 		return int16_t(std::lround(y));
+	}
+};
+
+// ---- output resample stage (dtalk_synth16_out) -----------------------------
+// Android (and other hosts) hand the raw SAMPLE_RATE (10504Hz) stream to
+// their own audio pipeline, which then has to upsample it to the device's
+// native mixer rate itself. 10504Hz is not a rate host resamplers are tuned
+// for (not a clean ratio to typical rates like 44100/48000), and that
+// host-side resample was observed to leave audible imaging artifacts even
+// with the reconstruction low-pass (dtalk_set_lowpass_hz) turned all the way
+// down - i.e. the noise survives regardless of the corner, because it isn't
+// coming from the SAMPLE_RATE-domain signal dtalk produces, it's introduced
+// downstream of it. This stage does the upsample here instead, with a filter
+// tuned to this exact signal, so a host can just play the result at its
+// native rate directly.
+//
+// Implementation: windowed-sinc ("band-limited interpolation") resampling.
+// Each output sample is a weighted sum of the 2*RESAMPLE_N nearest raw
+// samples using a Kaiser-windowed sinc kernel with a passband to
+// RESAMPLE_CUTOFF_HZ (matched to LPF_HZ_MAX, so the reconstruction filter's
+// widest setting survives unattenuated) and a stopband above SAMPLE_RATE -
+// RESAMPLE_CUTOFF_HZ, where the raw stream's images would otherwise land
+// (verified by measurement: >85dB image rejection above ~5.5kHz with these
+// parameters). The kernel depends only on the fixed SAMPLE_RATE, never on
+// the chosen output rate, so it is precomputed once into a table indexed by
+// (integer tap offset, sub-sample phase) and shared by every instance.
+constexpr int RESAMPLE_N = 32;                    // kernel half-width, in raw samples
+constexpr double RESAMPLE_BETA = 9.0;             // Kaiser window shape
+constexpr double RESAMPLE_CUTOFF_HZ = LPF_HZ_MAX; // matches the widest user corner
+constexpr int RESAMPLE_TABLE_STEPS = 1024;        // phase resolution per raw-sample interval
+
+double bessel_i0(double x)
+{
+	double sum = 1.0, term = 1.0;
+	for (int k = 1; k < 40; k++)
+	{
+		term *= (x / (2.0 * k)) * (x / (2.0 * k));
+		sum += term;
+		if (term < 1e-16 * sum) break;
+	}
+	return sum;
+}
+
+double kaiser_window(double x, int half_width, double beta)
+{
+	double r = x / half_width;
+	if (r <= -1.0 || r >= 1.0) return 0.0;
+	return bessel_i0(beta * std::sqrt(1.0 - r * r)) / bessel_i0(beta);
+}
+
+double windowed_sinc(double x, double fc_ratio)
+{
+	double u = x * fc_ratio;
+	double s = (std::fabs(u) < 1e-9) ? 1.0 : std::sin(DT_PI * u) / (DT_PI * u);
+	return s * kaiser_window(x, RESAMPLE_N, RESAMPLE_BETA);
+}
+
+// table.at(k, p) = h(k - p/RESAMPLE_TABLE_STEPS), k in [-RESAMPLE_N, RESAMPLE_N),
+// p in [0, RESAMPLE_TABLE_STEPS).
+struct resample_table
+{
+	std::vector<double> data;
+	resample_table()
+	{
+		data.resize(size_t(2 * RESAMPLE_N) * RESAMPLE_TABLE_STEPS);
+		const double fc_ratio = 2.0 * RESAMPLE_CUTOFF_HZ / double(SAMPLE_RATE);
+		for (int k = -RESAMPLE_N; k < RESAMPLE_N; k++)
+			for (int p = 0; p < RESAMPLE_TABLE_STEPS; p++)
+			{
+				double frac = double(p) / RESAMPLE_TABLE_STEPS;
+				data[size_t(k + RESAMPLE_N) * RESAMPLE_TABLE_STEPS + p] =
+					windowed_sinc(double(k) - frac, fc_ratio);
+			}
+	}
+	double at(int k, int p) const
+	{
+		return data[size_t(k + RESAMPLE_N) * RESAMPLE_TABLE_STEPS + p];
+	}
+};
+
+const resample_table &kernel_table()
+{
+	static resample_table t;
+	return t;
+}
+
+// Streaming windowed-sinc resampler from SAMPLE_RATE up to a configured
+// output rate (upsampling only; see dtalk_set_output_rate).
+struct resampler
+{
+	double step = 1.0;        // SAMPLE_RATE / out_rate: advance per output sample
+	double pos = 0.0;         // absolute raw-sample position of the next output sample
+	s64 base_index = 0;       // absolute raw-sample index of hist.front()
+	std::deque<double> hist;  // buffered raw samples not yet fully consumed
+	bool flushed = false;     // true once this utterance's trailing pad has been added
+
+	// A rate change alone needs no reset - glitch-free mid-stream exactly
+	// like dtalk_set_lowpass_hz, since hist holds raw SAMPLE_RATE-domain
+	// samples whose meaning doesn't depend on the target rate.
+	void configure(u32 out_rate)
+	{
+		step = double(SAMPLE_RATE) / double(out_rate);
+	}
+
+	// Clears buffered history (mirrors output_stage::reset), so a resume
+	// after dtalk_stop()/dtalk_reset() doesn't blend pre-cut samples into
+	// the next utterance.
+	void reset()
+	{
+		hist.clear();
+		base_index = 0;
+		pos = 0.0;
+		flushed = false;
+	}
+
+	double sample_at(s64 idx) const
+	{
+		if (idx < base_index) return 0.0; // before stream start: silence pad
+		size_t rel = size_t(idx - base_index);
+		return rel < hist.size() ? hist[rel] : 0.0;
+	}
+
+	// Raw samples beyond (and including) the current output position that
+	// are already buffered - lets the caller size its next raw fetch to the
+	// actual deficit instead of a fixed margin, so history can't grow
+	// without bound over a long utterance.
+	size_t available_ahead() const
+	{
+		s64 next_index = base_index + s64(hist.size());
+		s64 ahead = next_index - s64(std::floor(pos));
+		return ahead > 0 ? size_t(ahead) : 0;
+	}
+
+	size_t process(const int16_t *in, size_t n_in, int16_t *out, size_t max_out)
+	{
+		for (size_t i = 0; i < n_in; i++)
+			hist.push_back(double(in[i]) / 32768.0);
+		const s64 next_index = base_index + s64(hist.size());
+
+		size_t produced = 0;
+		const auto &table = kernel_table();
+		while (produced < max_out)
+		{
+			s64 center = s64(std::floor(pos));
+			if (center + RESAMPLE_N > next_index) break; // need more raw input
+			double frac = pos - double(center);
+			int p = int(std::lround(frac * RESAMPLE_TABLE_STEPS));
+			if (p >= RESAMPLE_TABLE_STEPS) p = RESAMPLE_TABLE_STEPS - 1;
+			if (p < 0) p = 0;
+			double acc = 0.0, wsum = 0.0;
+			for (int k = -RESAMPLE_N; k < RESAMPLE_N; k++)
+			{
+				double h = table.at(k, p);
+				acc += h * sample_at(center + k);
+				wsum += h;
+			}
+			double y = (wsum != 0.0) ? acc / wsum : 0.0;
+			if (y > 1.0) y = 1.0; else if (y < -1.0) y = -1.0;
+			out[produced++] = int16_t(std::lround(y * 32767.0));
+			pos += step;
+		}
+
+		const s64 min_needed = s64(std::floor(pos)) - RESAMPLE_N;
+		while (!hist.empty() && base_index < min_needed)
+		{
+			hist.pop_front();
+			base_index++;
+		}
+		return produced;
+	}
+
+	// Pads with silence exactly once per utterance so any tail still
+	// buffered (needing right-context beyond the real signal's end) can
+	// still be produced; called whenever the raw stream reports genuine
+	// idle. Must NOT re-pad on every call - the raw stream stays at "idle"
+	// (returning 0) indefinitely once speech ends, and re-adding samples
+	// each time would manufacture an endless tail of trailing silence,
+	// so dtalk_synth16_out would never see a genuine 0 and never stop.
+	size_t flush(int16_t *out, size_t max_out)
+	{
+		if (flushed)
+			return process(nullptr, 0, out, max_out);
+		flushed = true;
+		int16_t zeros[RESAMPLE_N];
+		std::fill(std::begin(zeros), std::end(zeros), int16_t(0));
+		return process(zeros, RESAMPLE_N, out, max_out);
 	}
 };
 
@@ -196,6 +435,9 @@ struct dtalk
 {
 	doubletalk_board board;
 	output_stage out16;                // modeled output stage for dtalk_synth16
+	resampler resamp;                  // optional upsample stage for dtalk_synth16_out
+	u32 out_rate = 0;                  // 0 = disabled (dtalk_synth16_out == dtalk_synth16)
+	std::vector<int16_t> resample_scratch; // raw-rate scratch buffer for dtalk_synth16_out
 	std::deque<u8> queue;              // host-side bytes not yet accepted by the card
 	std::vector<u8> carry;             // pulled but not yet delivered samples
 	size_t carry_off = 0;
@@ -396,6 +638,7 @@ void dtalk_reset(dtalk *dt)
 	dt->silence_run = 0;
 	dt->heard_speech = false;
 	dt->out16.reset();
+	dt->resamp.reset();
 	dt->board.reset();
 	dt->boot();
 }
@@ -454,6 +697,7 @@ void dtalk_stop(dtalk *dt)
 	// the DC-block at that level, so no boundary step (and thus no re-click) is
 	// synthesized across the cut.
 	dt->out16.reset();
+	dt->resamp.reset();
 	dt->idle_stable = 0;
 	dt->silence_run = 0;
 	dt->heard_speech = false;
@@ -560,6 +804,48 @@ void dtalk_set_pause_cap_ms(dtalk *dt, uint32_t ms)
 	// silence run longer than ms is cut down to ms - see pull()'s trimming
 	// and the pause-shortening note above LPF_HZ_MIN/MAX.
 	dt->pause_cap_samples = ms == 0 ? 0 : u32(u64(ms) * SAMPLE_RATE / 1000);
+}
+
+void dtalk_set_output_rate(dtalk *dt, uint32_t hz)
+{
+	if (hz != 0 && hz < SAMPLE_RATE) hz = SAMPLE_RATE; // this stage only upsamples
+	if (hz > 192000) hz = 192000;
+	dt->out_rate = hz;
+	dt->resamp.configure(hz == 0 ? SAMPLE_RATE : hz);
+}
+
+uint32_t dtalk_get_output_rate(const dtalk *dt)
+{
+	return dt->out_rate;
+}
+
+size_t dtalk_synth16_out(dtalk *dt, int16_t *out, size_t max_samples)
+{
+	if (dt->out_rate == 0 || dt->out_rate == SAMPLE_RATE)
+		return dtalk_synth16(dt, out, max_samples);
+
+	size_t produced = 0;
+	int guard = 0; // defensive iteration cap; the sizing below should always
+	                // converge in a handful of iterations
+	while (produced < max_samples && guard++ < 64)
+	{
+		size_t want = max_samples - produced;
+		size_t needed = size_t(std::ceil(double(want) * dt->resamp.step)) + 2 * RESAMPLE_N;
+		size_t have = dt->resamp.available_ahead();
+		size_t raw_want = needed > have ? needed - have : 1;
+
+		if (dt->resample_scratch.size() < raw_want)
+			dt->resample_scratch.resize(raw_want);
+		size_t raw_n = dtalk_synth16(dt, dt->resample_scratch.data(), raw_want);
+		if (raw_n > 0)
+			produced += dt->resamp.process(dt->resample_scratch.data(), raw_n, out + produced, want);
+		if (raw_n == 0)
+		{
+			produced += dt->resamp.flush(out + produced, max_samples - produced);
+			break;
+		}
+	}
+	return produced;
 }
 
 size_t dtalk_read_index_marks(dtalk *dt, dtalk_index_mark *out, size_t max)
