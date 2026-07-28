@@ -20,6 +20,14 @@ object DoubleTalkNative {
     external fun setRateBoost(handle: Long, level: Int)
     external fun setLowpassHz(handle: Long, hz: Int)
 
+    /**
+     * Configure the final upsample stage: [hz] must be >= the card's native
+     * rate (smaller values clamp up to it); 0 disables resampling. See
+     * dtalk_set_output_rate for why this exists (the card's raw 10504Hz rate
+     * upsamples badly through the OS's own audio pipeline).
+     */
+    external fun setOutputRate(handle: Long, hz: Int)
+
     /** Queue raw bytes (text + 0x01-prefixed commands; CR starts speech). */
     external fun queue(handle: Long, data: ByteArray)
 
@@ -29,7 +37,8 @@ object DoubleTalkNative {
 
     /**
      * Run the emulation forward, filling [out] with signed 16-bit mono PCM
-     * through the modeled output stage. Returns samples produced; 0 = idle.
+     * through the modeled output stage (and the setOutputRate resample stage,
+     * if configured). Returns samples produced; 0 = idle.
      */
     external fun synth16(handle: Long, out: ShortArray): Int
 }

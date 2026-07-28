@@ -60,6 +60,12 @@ Java_org_doubledroid_tts_DoubleTalkNative_setLowpassHz(JNIEnv *, jobject, jlong 
 }
 
 JNIEXPORT void JNICALL
+Java_org_doubledroid_tts_DoubleTalkNative_setOutputRate(JNIEnv *, jobject, jlong h, jint hz)
+{
+	dtalk_set_output_rate((dtalk *)(intptr_t)h, (uint32_t)hz);
+}
+
+JNIEXPORT void JNICALL
 Java_org_doubledroid_tts_DoubleTalkNative_queue(JNIEnv *env, jobject, jlong h, jbyteArray data)
 {
 	jsize len = env->GetArrayLength(data);
@@ -81,13 +87,14 @@ Java_org_doubledroid_tts_DoubleTalkNative_active(JNIEnv *, jobject, jlong h)
 }
 
 /* Fills out[] with up to out.length signed 16-bit samples through the modeled
- * output stage; returns the number of samples produced (0 = idle). */
+ * output stage (and, if setOutputRate was called, the resample stage too);
+ * returns the number of samples produced (0 = idle). */
 JNIEXPORT jint JNICALL
 Java_org_doubledroid_tts_DoubleTalkNative_synth16(JNIEnv *env, jobject, jlong h, jshortArray out)
 {
 	jsize max = env->GetArrayLength(out);
 	jshort *buf = env->GetShortArrayElements(out, nullptr);
-	size_t n = dtalk_synth16((dtalk *)(intptr_t)h, (int16_t *)buf, (size_t)max);
+	size_t n = dtalk_synth16_out((dtalk *)(intptr_t)h, (int16_t *)buf, (size_t)max);
 	env->ReleaseShortArrayElements(out, buf, 0);
 	return (jint)n;
 }
