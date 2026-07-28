@@ -126,6 +126,34 @@ DTALK_API size_t dtalk_synth16(dtalk *dt, int16_t *out, size_t max_samples);
  * across dtalk_stop()/dtalk_reset(); those only clear the filter's history. */
 DTALK_API void dtalk_set_lowpass_hz(dtalk *dt, uint32_t hz);
 
+/* Cap the length of any MID-UTTERANCE silence run (i.e. after sentence-
+ * ending punctuation) in the generated PCM to ms milliseconds; 0 (the
+ * default) leaves those authentic/untouched.
+ *
+ * The firmware has no command to shorten this pause - its inter-word gap
+ * (the manual's nT command) already defaults to 0, its fastest setting, so
+ * there is nothing "faster than default" to ask the firmware for. What
+ * listeners perceive as a long pause is simply the DAC sitting at its idle
+ * level during the intonation drop after a period or comma. This trims that
+ * silence directly out of the PCM stream instead: any run of near-idle
+ * samples longer than ms, after the utterance's first sound, is cut down to
+ * ms. Word-to-word gaps are already far shorter than any reasonable ms, so
+ * they are never affected.
+ *
+ * An utterance's lead-in silence (the firmware still parsing the command
+ * prefix/text before its first sound) is a separate matter and is always
+ * capped independently of ms (see LEADIN_CAP_SAMPLES in dtalk.cpp) - nobody
+ * wants a slow start even when ms == 0 asks for fully authentic mid-
+ * utterance pauses. Trimming silence here costs a little extra CPU emulation
+ * to produce the samples that replace what was dropped, but that emulation
+ * runs well faster than real time, while the silence would otherwise have
+ * cost its full duration being played out through the speaker - so trimming
+ * is a net reduction in time-to-audible-sound, not a regression.
+ *
+ * Applies to both dtalk_synth() and dtalk_synth16(); persists across
+ * dtalk_stop() and dtalk_reset(), same as dtalk_set_lowpass_hz(). */
+DTALK_API void dtalk_set_pause_cap_ms(dtalk *dt, uint32_t ms);
+
 /* Index markers (embedded Ctrl-A <n> I, n = 0-99): each marker reached by
  * the speech output is queued with the absolute output-sample position at
  * which it fired (positions count all samples produced since create/reset,

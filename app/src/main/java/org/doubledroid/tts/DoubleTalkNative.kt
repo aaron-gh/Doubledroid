@@ -20,6 +20,10 @@ object DoubleTalkNative {
     external fun setRateBoost(handle: Long, level: Int)
     external fun setLowpassHz(handle: Long, hz: Int)
 
+    /** Caps any silence run in the generated PCM to [ms] milliseconds; 0
+     * disables trimming (the authentic firmware pause). */
+    external fun setPauseCapMs(handle: Long, ms: Int)
+
     /** Queue raw bytes (text + 0x01-prefixed commands; CR starts speech). */
     external fun queue(handle: Long, data: ByteArray)
 

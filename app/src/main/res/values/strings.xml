@@ -23,6 +23,11 @@
     <string name="filter_wide">Wide (4.8 kHz, brighter)</string>
     <string name="rate_boost_label">Rate boost (faster than the card\'s maximum, pitch preserved)</string>
     <string name="volume_label">Volume (card nV)</string>
+    <string name="pause_label">Pause after sentences/punctuation</string>
+    <string name="pause_default">Default (the card\'s own pause length)</string>
+    <string name="pause_short">Short</string>
+    <string name="pause_shorter">Shorter</string>
+    <string name="pause_shortest">Shortest</string>
 
     <string name="quality_section">Voice quality</string>
     <string name="quality_hint">Auto follows the selected voice\'s own firmware preset.</string>

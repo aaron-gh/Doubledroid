@@ -17,7 +17,11 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Locale
 
-private const val SAMPLES_PER_CHUNK = 2048
+// Samples requested per synthChunk() call. Each call blocks until this many
+// samples are ready (or speech finishes), so it directly sets the latency
+// before the first audio reaches the TTS callback - kept small so utterances
+// start speaking promptly instead of buffering ~200ms before the first byte.
+private const val SAMPLES_PER_CHUNK = 512
 
 class DoubleTalkTtsService : TextToSpeechService() {
 
@@ -84,14 +88,18 @@ class DoubleTalkTtsService : TextToSpeechService() {
                 .getInt(DoubleTalkEngine.PREF_VOICE, 0).coerceIn(0, 7)
         }
 
-        val text = request.charSequenceText?.toString() ?: ""
-        val utterance = DoubleTalkEngine.utteranceBytes(
-            this, cardVoice, request.speechRate, request.pitch, text)
-
         val rate = DoubleTalkEngine.sampleRate
         if (callback.start(rate, AudioFormat.ENCODING_PCM_16BIT, 1) != TextToSpeech.SUCCESS) {
             return
         }
+
+        // Built only after callback.start() succeeds: utteranceBytes() records
+        // the voice as sent to the card (skipping nO on the next matching
+        // utterance), so building it before a start() failure would record a
+        // voice that was never actually queued.
+        val text = request.charSequenceText?.toString() ?: ""
+        val utterance = DoubleTalkEngine.utteranceBytes(
+            this, cardVoice, request.speechRate, request.pitch, text)
 
         // Flush anything a previous (interrupted) utterance left behind,
         // then feed this one. Settings persist across dtalk_stop.
