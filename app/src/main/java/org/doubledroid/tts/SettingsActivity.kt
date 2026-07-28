@@ -71,10 +71,10 @@ class SettingsActivity : Activity() {
             android.R.layout.simple_spinner_dropdown_item,
             arrayOf(getString(R.string.filter_classic), getString(R.string.filter_wide)))
         filterSpinner.setSelection(
-            if (prefs.getInt(DoubleTalkEngine.PREF_FILTER, 3000) >= 4800) 1 else 0)
+            if (prefs.getInt(DoubleTalkEngine.PREF_FILTER, 3000) >= 4000) 1 else 0)
         filterSpinner.onItemSelectedListener = onSelected { pos ->
             prefs.edit().putInt(DoubleTalkEngine.PREF_FILTER,
-                if (pos == 1) 4800 else 3000).apply()
+                if (pos == 1) 4000 else 3000).apply()
             DoubleTalkEngine.applyPrefs(this)
         }
 

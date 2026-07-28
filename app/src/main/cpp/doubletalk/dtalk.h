@@ -126,6 +126,36 @@ DTALK_API size_t dtalk_synth16(dtalk *dt, int16_t *out, size_t max_samples);
  * across dtalk_stop()/dtalk_reset(); those only clear the filter's history. */
 DTALK_API void dtalk_set_lowpass_hz(dtalk *dt, uint32_t hz);
 
+/* Configure an optional final resample stage used by dtalk_synth16_out():
+ * after the existing dtalk_synth16 output stage (DC-block high-pass +
+ * reconstruction low-pass + headroom gain), a windowed-sinc anti-imaging
+ * resampler converts the fixed dtalk_sample_rate() stream up to hz. This
+ * exists because hosts that hand the raw 10504Hz stream to their own audio
+ * pipeline (e.g. Android's AudioTrack) have to upsample it themselves to
+ * their output device's native rate, and 10504Hz - not a clean ratio to
+ * typical rates like 44100/48000 - can come out of that host-side resample
+ * with audible imaging artifacts that persist regardless of the
+ * dtalk_set_lowpass_hz corner, since they are introduced downstream of it.
+ * This stage does the upsample here instead, with a filter tuned to this
+ * signal (passband to LPF_HZ_MAX, so every valid lowpass corner setting
+ * survives unattenuated; stopband above SAMPLE_RATE - LPF_HZ_MAX, where the
+ * raw stream's images would otherwise land).
+ *
+ * hz must be >= dtalk_sample_rate() (this stage only upsamples; smaller
+ * values are clamped up to it) and is clamped at 192000. Passing 0 disables
+ * the stage: dtalk_synth16_out then behaves exactly like dtalk_synth16, at
+ * dtalk_sample_rate(). Safe to call mid-stream, same as dtalk_set_lowpass_hz
+ * - only the resample ratio changes, the buffered filter history carries
+ * over with no discontinuity. */
+DTALK_API void dtalk_set_output_rate(dtalk *dt, uint32_t hz);
+DTALK_API uint32_t dtalk_get_output_rate(const dtalk *dt);
+
+/* Same semantics as dtalk_synth16, but through the dtalk_set_output_rate
+ * resample stage when one is configured (a transparent passthrough to
+ * dtalk_synth16 otherwise, at dtalk_sample_rate()). Produces audio at
+ * dtalk_get_output_rate() Hz (or dtalk_sample_rate() if unset). */
+DTALK_API size_t dtalk_synth16_out(dtalk *dt, int16_t *out, size_t max_samples);
+
 /* Index markers (embedded Ctrl-A <n> I, n = 0-99): each marker reached by
  * the speech output is queued with the absolute output-sample position at
  * which it fired (positions count all samples produced since create/reset,
