@@ -245,10 +245,22 @@ object DoubleTalkEngine {
         )
     }
 
+    /** Unicode punctuation that has an unambiguous ASCII equivalent (iOS/macOS
+     * autocorrect curly quotes, en/em dashes, ellipsis, etc.). Mapped before
+     * the ASCII-only strip below so e.g. a curly apostrophe still reads as
+     * "don't" rather than becoming a word-breaking space ("don t"). */
+    private val UNICODE_PUNCTUATION = mapOf(
+        '‘' to '\'', '’' to '\'', '‚' to '\'', '′' to '\'',
+        '“' to '"', '”' to '"', '„' to '"', '″' to '"',
+        '–' to '-', '—' to '-',
+        '…' to '.',
+    )
+
     /** Printable ASCII only: the firmware treats control bytes as commands
      * (and 0x01 must never occur in user text). */
     fun sanitizeText(text: String): String =
-        text.replace(Regex("[^\\x20-\\x7e]"), " ")
+        text.map { UNICODE_PUNCTUATION[it] ?: it }.joinToString("")
+            .replace(Regex("[^\\x20-\\x7e]"), " ")
 
     /** Full utterance: settings prefix + sanitized text + CR (starts speech). */
     fun utteranceBytes(context: Context, cardVoice: Int, rate: Int, pitch: Int, text: String): ByteArray {
