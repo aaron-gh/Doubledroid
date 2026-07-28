@@ -284,10 +284,17 @@ object DoubleTalkEngine {
     )
 
     /** Printable ASCII only: the firmware treats control bytes as commands
-     * (and 0x01 must never occur in user text). */
+     * (and 0x01 must never occur in user text). Emoji are spelled out by
+     * [Emoji.describe] first so e.g. 🙂 reads as "slightly smiling face"
+     * instead of disappearing into the word-breaking space below; the
+     * space-padding that leaves around each description is collapsed back
+     * to single spaces afterwards. */
     fun sanitizeText(text: String): String =
-        text.map { UNICODE_PUNCTUATION[it] ?: it }.joinToString("")
+        Emoji.describe(text)
+            .map { UNICODE_PUNCTUATION[it] ?: it }.joinToString("")
             .replace(Regex("[^\\x20-\\x7e]"), " ")
+            .replace(Regex(" {2,}"), " ")
+            .trim()
 
     /** Full utterance: settings prefix + sanitized text + CR (starts speech). */
     fun utteranceBytes(context: Context, cardVoice: Int, rate: Int, pitch: Int, text: String): ByteArray {
