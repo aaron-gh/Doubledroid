@@ -29,6 +29,7 @@ object DoubleTalkEngine {
     const val PREF_EXPRESSION = "expression"  // nE 0-9, -1 = voice preset
     const val PREF_FORMANT = "formant"        // nF 0-9, -1 = voice preset
     const val PREF_REVERB = "reverb"          // nR 0-9, -1 = voice preset
+    const val PREF_EMOJI_COLLAPSE_REPEATS = "emoji_collapse_repeats" // bool, default true
 
     /** nO voice numbers 0-7, names per the DoubleTalk PC/LT manual (Table 1).
      * Voices 5/6/7 are firmware aliases of 0/1/2's presets. */
@@ -289,8 +290,8 @@ object DoubleTalkEngine {
      * instead of disappearing into the word-breaking space below; the
      * space-padding that leaves around each description is collapsed back
      * to single spaces afterwards. */
-    fun sanitizeText(text: String): String =
-        Emoji.describe(text)
+    fun sanitizeText(text: String, collapseRepeatedEmoji: Boolean): String =
+        Emoji.describe(text, collapseRepeatedEmoji)
             .map { UNICODE_PUNCTUATION[it] ?: it }.joinToString("")
             .replace(Regex("[^\\x20-\\x7e]"), " ")
             .replace(Regex(" {2,}"), " ")
@@ -298,8 +299,9 @@ object DoubleTalkEngine {
 
     /** Full utterance: settings prefix + sanitized text + CR (starts speech). */
     fun utteranceBytes(context: Context, cardVoice: Int, rate: Int, pitch: Int, text: String): ByteArray {
+        val collapseRepeatedEmoji = prefs(context).getBoolean(PREF_EMOJI_COLLAPSE_REPEATS, true)
         val s = buildPrefixFromPrefs(context, cardVoice, rate, pitch) +
-            sanitizeText(text) + "\r"
+            sanitizeText(text, collapseRepeatedEmoji) + "\r"
         return s.toByteArray(Charsets.US_ASCII)
     }
 }
